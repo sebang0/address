@@ -259,7 +259,6 @@ if uploaded_file and api_key:
             
             addr_dict = {}
             for _, row in st.session_state.mapping_df.iterrows():
-                # 제외 체크된 항목은 명시적으로 상태 기록
                 if row.get('제외여부', False):
                     addr_dict[row['원본 주소']] = ("보정 제외", None, None)
                     continue
@@ -276,6 +275,8 @@ if uploaded_file and api_key:
             df_target = st.session_state.df_raw
             total_rows = len(df_target)
             
+            route_cache = {}
+            
             for i, row in df_target.iterrows():
                 status_text.text(f"차량 주행 거리 산출 중... ({i+1}/{total_rows})")
                 s_raw, e_raw = str(row[col_start]), str(row[col_end])
@@ -286,19 +287,29 @@ if uploaded_file and api_key:
                 dist = 0.0
                 note = ""
                 
-                # [신규 추가] 산출 비고(Note) 결정 로직
                 if s_info[0] == "보정 제외" or e_info[0] == "보정 제외":
                     note = "🚫 사용자 제외"
                 elif s_info[1] and e_info[1]: 
-                    dist = get_driving_distance((s_info[1], s_info[2]), (e_info[1], e_info[2]), api_key)
-                    note = "✅ 정상 산출" if dist > 0 else "⚠️ 경로 탐색 불가"
+                    start_coord = (s_info[1], s_info[2])
+                    end_coord = (e_info[1], e_info[2])
+                    route_key = (start_coord, end_coord)
+                    
+                    if start_coord == end_coord:
+                        dist = 0.0
+                        note = "✅ 정상 산출(동일 위치)"
+                    elif route_key in route_cache:
+                        dist = route_cache[route_key]
+                        note = "✅ 정상 산출(캐시 사용)" if dist > 0 else "⚠️ 경로 탐색 불가(캐시)"
+                    else:
+                        dist = get_driving_distance(start_coord, end_coord, api_key)
+                        route_cache[route_key] = dist
+                        note = "✅ 정상 산출" if dist > 0 else "⚠️ 경로 탐색 불가"
                 else:
                     note = "⚠️ 좌표 확인 불가"
                 
                 s_final = s_info[0] if s_info[0] else "확인 불가"
                 e_final = e_info[0] if e_info[0] else "확인 불가"
                 
-                # 원본 열(s_raw, e_raw)은 df_target에 그대로 유지되고, 새로운 열만 우측에 추가됩니다.
                 results.append({
                     "정정_출발지": s_final,
                     "정정_도착지": e_final,
@@ -306,7 +317,8 @@ if uploaded_file and api_key:
                     "산출 비고": note
                 })
                 
-                if dist > 0:
+                # [핵심 변경] 좌표가 존재하고 사용자가 제외한 항목이 아니라면 무조건 링크 활성화
+                if s_info[1] and e_info[1] and "보정 제외" not in [s_info[0], e_info[0]]:
                     links.append(f"https://m.map.kakao.com/scheme/route?sp={s_info[2]},{s_info[1]}&ep={e_info[2]},{e_info[1]}&by=car")
                 else:
                     links.append(None)
@@ -322,16 +334,15 @@ if uploaded_file and api_key:
 
         final_df = st.session_state.final_df
         total_cnt = len(final_df)
-        success_cnt = len(final_df[final_df['산출 비고'] == '✅ 정상 산출'])
+        success_cnt = len(final_df[final_df['산출 비고'].str.contains('✅ 정상 산출')])
         fail_cnt = total_cnt - success_cnt
         
         st.success(f"📌 **산출 완료!** 총 **{total_cnt}건** 중 정상 산출 **{success_cnt}건** / 실패(또는 제외) **{fail_cnt}건**")
 
-        # 결과표 스타일링 (제외된 항목은 회색으로 흐리게, 에러는 빨간색)
         def highlight_result(row):
             if '사용자 제외' in row['산출 비고']:
                 return ['background-color: #f2f2f2; color: #a6a6a6'] * len(row)
-            elif row['주행거리(km)'] == 0.0:
+            elif '⚠️' in row['산출 비고']:
                 return ['background-color: #ffe6e6; color: #cc0000'] * len(row)
             return [''] * len(row)
             
@@ -358,5 +369,5 @@ if uploaded_file and api_key:
     if st.session_state.api_log:
         st.markdown("---")
         with st.expander("🛠️ 시스템 디버그: API 호출 이력 보기", expanded=False):
-            st.caption(f"이번 세션에서 총 **{len(st.session_state.api_log)}번**의 API 호출이 발생했습니다.")
+            st.caption(f"이번 세션에서 총 **{len(st.session_state.api_log)}번**의 API 호출이 발생했습니다. 중복 구간은 캐시를 사용하여 호출을 방어했습니다.")
             st.dataframe(pd.DataFrame(st.session_state.api_log), use_container_width=True)
