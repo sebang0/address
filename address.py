@@ -18,7 +18,6 @@ MASTER_DATA = {
            4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5]
 }
 DF_MASTER = pd.DataFrame(MASTER_DATA)
-# 빠른 검색을 위한 딕셔너리 변환 (톤급 -> 차종)
 TONNAGE_MAP = dict(zip(DF_MASTER['톤급'], DF_MASTER['차종']))
 
 # --- 1. 카카오 API 통신 함수 ---
@@ -131,7 +130,6 @@ st.sidebar.header("1. 기본 설정")
 api_key = st.sidebar.text_input("카카오 REST API 키", type="password", on_change=reset_step)
 uploaded_file = st.sidebar.file_uploader("구간 엑셀 파일 업로드", type=["xlsx"], on_change=reset_step)
 
-# 톤급 마스터 표 사이드바 노출
 with st.sidebar.expander("📊 톤급-차종 마스터표 보기", expanded=False):
     st.dataframe(DF_MASTER, hide_index=True, use_container_width=True)
 
@@ -147,9 +145,10 @@ if uploaded_file and api_key:
     
     st.sidebar.markdown("---")
     st.sidebar.header("2. 열(Column) 매핑")
+    # [요청사항 반영] 선택 순서 변경: 톤급 -> 출발지 -> 도착지
+    col_ton = st.sidebar.selectbox("톤급 열:", cols, on_change=reset_step)
     col_start = st.sidebar.selectbox("출발지 주소 열:", cols, on_change=reset_step)
     col_end = st.sidebar.selectbox("도착지 주소 열:", cols, on_change=reset_step)
-    col_ton = st.sidebar.selectbox("톤급 열:", cols, on_change=reset_step) # 톤급 열 추가
     
     st.sidebar.markdown("---")
     st.sidebar.header("3. 실행 및 진행 상황")
@@ -157,7 +156,6 @@ if uploaded_file and api_key:
 if df_raw is not None and st.session_state.step == 0:
     st.info("👈 좌측 사이드바에서 설정을 확인한 후 **[🚀 1단계: 검증 시작]** 버튼을 눌러주세요.")
     
-    # [신규 기능] 등록되지 않은 신규 톤급 알림 로직
     unmapped_tons = set()
     for val in df_raw[col_ton].dropna():
         try:
@@ -168,6 +166,9 @@ if df_raw is not None and st.session_state.step == 0:
             
     if unmapped_tons:
         st.warning(f"⚠️ **업데이트되지 않은 신규 톤급 {len(unmapped_tons)}건의 차종은 1종으로 반영됩니다.** \n(대상: {', '.join(map(str, list(unmapped_tons)[:10]))} 등)")
+    else:
+        # [요청사항 반영] 이상이 없는 경우 초록색 배경 알림
+        st.success("✅ **모든 톤급 데이터가 마스터표에 정상적으로 매핑되었습니다.**")
 
 if df_raw is not None:
     # [Step 1] 주소 정정 실행
@@ -259,8 +260,8 @@ if df_raw is not None:
         completion_tracker = {}
         
         if len(error_indices) == 0:
-            st.success("🎉 모든 주소가 정상적으로 검색됩니다! 좌측 사이드바에서 2단계를 진행하세요.")
-            completed_tasks = 1; error_indices = []
+            st.success("🎉 모든 주소가 정상적으로 검색됩니다!")
+            # 오류가 0개여도 진행 가능하도록 조건 우회
         else:
             if st.session_state.step == 1: st.info("💡 선택 또는 직접 입력이 모두 완료되어야만 최종 구간 거리를 산출할 수 있습니다.")
             else: st.info("💡 1단계에서 진행한 주소 보정 내역입니다.")
@@ -303,29 +304,40 @@ if df_raw is not None:
                 title_ph.markdown(f"**행 {idx+2}** {mark} ➡️ 상태: :{color}[**{status}**]")
                 st.markdown("---")
         
-        if st.session_state.step == 1 and len(error_indices) > 0:
-            st.sidebar.progress(completed_tasks / len(error_indices))
-            st.sidebar.write(f"**진행률:** {completed_tasks} / {len(error_indices)} 완료")
-            
-            uncompleted_rows = [str(idx+2) for idx, comp in completion_tracker.items() if not comp]
-            if uncompleted_rows:
-                st.sidebar.caption("⏳ 미완료 행 번호:\n" + ", ".join(uncompleted_rows[:15]) + ("..." if len(uncompleted_rows)>15 else ""))
-            
+        # [요청사항 반영] 2단계 실행 제어 (에러가 없거나 모두 완료 시 버튼 활성화)
+        if st.session_state.step == 1:
             st.sidebar.markdown("---")
-            if completed_tasks == len(error_indices):
-                st.sidebar.success("🎉 보정 완료!")
+            st.sidebar.subheader("📍 2단계 진행")
+            
+            if len(error_indices) == 0:
+                st.sidebar.success("🎉 모든 주소가 정상입니다!")
                 if st.sidebar.button("✅ 2단계: 거리 산출 시작", type="primary", use_container_width=True):
                     st.session_state.mapping_df = df_edit 
                     st.session_state.step = 2
                     st.rerun()
             else:
-                st.sidebar.button("✅ 2단계: 거리 산출 (대기중)", disabled=True, use_container_width=True)
+                st.sidebar.progress(completed_tasks / len(error_indices))
+                st.sidebar.write(f"**진행률:** {completed_tasks} / {len(error_indices)} 완료")
+                
+                uncompleted_rows = [str(idx+2) for idx, comp in completion_tracker.items() if not comp]
+                if uncompleted_rows:
+                    st.sidebar.caption("⏳ 미완료 행 번호:\n" + ", ".join(uncompleted_rows[:15]) + ("..." if len(uncompleted_rows)>15 else ""))
+                
+                if completed_tasks == len(error_indices):
+                    st.sidebar.success("🎉 보정 완료!")
+                    if st.sidebar.button("✅ 2단계: 거리 산출 시작", type="primary", use_container_width=True):
+                        st.session_state.mapping_df = df_edit 
+                        st.session_state.step = 2
+                        st.rerun()
+                else:
+                    st.sidebar.button("✅ 2단계: 거리 산출 (대기중)", disabled=True, use_container_width=True)
 
-    # [Step 2] 최종 거리 산출 (톤급별 동적 차종 적용)
+    # [Step 2] 최종 거리 산출
     if st.session_state.step == 2:
         st.markdown("---")
         st.subheader("📊 2단계 완료: 차량 톤급 기반 주행 거리 산출 결과")
         
+        st.sidebar.markdown("---")
         st.sidebar.success("✅ 모든 작업이 완료되었습니다.")
         if st.sidebar.button("🔄 처음부터 다시 시작", use_container_width=True):
             reset_step()
@@ -350,13 +362,11 @@ if df_raw is not None:
             df_target = st.session_state.df_raw
             total_rows = len(df_target)
             
-            # [핵심] (출발지, 도착지, 차종) 단위로 유니크한 경로 수집
             routes_to_fetch = set()
             for i, row in df_target.iterrows():
                 s_raw, e_raw = str(row[col_start]), str(row[col_end])
                 ton_val = row[col_ton]
                 
-                # 톤급을 차종으로 매핑 (에러나 미등록은 1종으로)
                 try: car_type = TONNAGE_MAP.get(float(ton_val), 1)
                 except: car_type = 1
                 
@@ -369,7 +379,6 @@ if df_raw is not None:
                     if start_coord != end_coord:
                         routes_to_fetch.add((start_coord, end_coord, car_type))
 
-            # 캐싱 키 역시 (start, end, car_type) 3차원
             route_cache = {}
             if routes_to_fetch:
                 status_text.text(f"필요한 {len(routes_to_fetch)}개 고유 경로(차종별) 동시 산출 중...")
@@ -419,7 +428,6 @@ if df_raw is not None:
                 })
                 
                 if s_info[1] and e_info[1] and "보정 제외" not in [s_info[0], e_info[0]]:
-                    # 웹에서 확인할 때도 차종 파라미터(1~7)를 붙여줍니다. (카카오맵 웹 표준)
                     kakao_cartype = 1 if car_type == 1 else (4 if car_type in [4,5] else 2) 
                     links.append(f"https://m.map.kakao.com/scheme/route?sp={s_info[2]},{s_info[1]}&ep={e_info[2]},{e_info[1]}&by=car&carType={kakao_cartype}")
                 else:
