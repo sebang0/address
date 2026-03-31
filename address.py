@@ -5,6 +5,7 @@ import urllib.parse
 from io import BytesIO
 import datetime
 import threading
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import plotly.express as px
 
@@ -19,6 +20,12 @@ MASTER_DATA = {
 }
 DF_MASTER = pd.DataFrame(MASTER_DATA)
 TONNAGE_MAP = dict(zip(DF_MASTER['톤급'], DF_MASTER['차종']))
+
+def parse_tonnage(val):
+    cleaned = re.sub(r'[^0-9.]', '', str(val))
+    if not cleaned: return None
+    try: return float(cleaned)
+    except ValueError: return None
 
 # --- 1. 카카오 API 통신 함수 ---
 def get_address_info(address, api_key, session):
@@ -126,7 +133,8 @@ def reset_step():
     st.session_state.step = 0
     st.session_state.api_log = [] 
 
-st.sidebar.header("1. 기본 설정")
+# [수정] 여백 축소를 위해 header 대신 markdown과 간소화된 텍스트 사용
+st.sidebar.markdown("**1. 기본 설정**")
 api_key = st.sidebar.text_input("카카오 REST API 키", type="password", on_change=reset_step)
 uploaded_file = st.sidebar.file_uploader("구간 엑셀 파일 업로드", type=["xlsx"], on_change=reset_step)
 
@@ -143,31 +151,27 @@ if uploaded_file and api_key:
     df_raw = pd.read_excel(uploaded_file)
     cols = df_raw.columns.tolist()
     
-    st.sidebar.markdown("---")
-    st.sidebar.header("2. 열(Column) 매핑")
-    # [요청사항 반영] 선택 순서 변경: 톤급 -> 출발지 -> 도착지
-    col_ton = st.sidebar.selectbox("톤급 열:", cols, on_change=reset_step)
-    col_start = st.sidebar.selectbox("출발지 주소 열:", cols, on_change=reset_step)
-    col_end = st.sidebar.selectbox("도착지 주소 열:", cols, on_change=reset_step)
+    st.sidebar.markdown("<br>**2. 열(Column) 매핑**", unsafe_allow_html=True)
+    # [수정] 수직 공간 절약을 위해 열 선택 위젯을 가로로 압축 배치
+    c1, c2 = st.sidebar.columns(2)
+    col_ton = c1.selectbox("톤급", cols, on_change=reset_step)
+    col_start = c2.selectbox("출발지", cols, on_change=reset_step)
+    col_end = st.sidebar.selectbox("도착지", cols, on_change=reset_step)
     
-    st.sidebar.markdown("---")
-    st.sidebar.header("3. 실행 및 진행 상황")
+    st.sidebar.markdown("<br>**3. 실행 및 진행 상황**", unsafe_allow_html=True)
 
 if df_raw is not None and st.session_state.step == 0:
     st.info("👈 좌측 사이드바에서 설정을 확인한 후 **[🚀 1단계: 검증 시작]** 버튼을 눌러주세요.")
     
     unmapped_tons = set()
     for val in df_raw[col_ton].dropna():
-        try:
-            if float(val) not in TONNAGE_MAP:
-                unmapped_tons.add(val)
-        except ValueError:
+        parsed_val = parse_tonnage(val)
+        if parsed_val is None or parsed_val not in TONNAGE_MAP:
             unmapped_tons.add(val)
             
     if unmapped_tons:
-        st.warning(f"⚠️ **업데이트되지 않은 신규 톤급 {len(unmapped_tons)}건의 차종은 1종으로 반영됩니다.** \n(대상: {', '.join(map(str, list(unmapped_tons)[:10]))} 등)")
+        st.warning(f"⚠️ **업데이트되지 않은 신규 톤급(또는 문자) {len(unmapped_tons)}건의 차종은 1종으로 반영됩니다.** \n(대상: {', '.join(map(str, list(unmapped_tons)[:10]))} 등)")
     else:
-        # [요청사항 반영] 이상이 없는 경우 초록색 배경 알림
         st.success("✅ **모든 톤급 데이터가 마스터표에 정상적으로 매핑되었습니다.**")
 
 if df_raw is not None:
@@ -261,7 +265,6 @@ if df_raw is not None:
         
         if len(error_indices) == 0:
             st.success("🎉 모든 주소가 정상적으로 검색됩니다!")
-            # 오류가 0개여도 진행 가능하도록 조건 우회
         else:
             if st.session_state.step == 1: st.info("💡 선택 또는 직접 입력이 모두 완료되어야만 최종 구간 거리를 산출할 수 있습니다.")
             else: st.info("💡 1단계에서 진행한 주소 보정 내역입니다.")
@@ -304,42 +307,39 @@ if df_raw is not None:
                 title_ph.markdown(f"**행 {idx+2}** {mark} ➡️ 상태: :{color}[**{status}**]")
                 st.markdown("---")
         
-        # [요청사항 반영] 2단계 실행 제어 (에러가 없거나 모두 완료 시 버튼 활성화)
+        # [수정] 사이드바 2단계 실행 영역 간소화
         if st.session_state.step == 1:
-            st.sidebar.markdown("---")
-            st.sidebar.subheader("📍 2단계 진행")
-            
             if len(error_indices) == 0:
-                st.sidebar.success("🎉 모든 주소가 정상입니다!")
+                st.sidebar.success("🎉 모든 주소 정상")
                 if st.sidebar.button("✅ 2단계: 거리 산출 시작", type="primary", use_container_width=True):
                     st.session_state.mapping_df = df_edit 
                     st.session_state.step = 2
                     st.rerun()
             else:
-                st.sidebar.progress(completed_tasks / len(error_indices))
-                st.sidebar.write(f"**진행률:** {completed_tasks} / {len(error_indices)} 완료")
+                progress_val = completed_tasks / len(error_indices)
+                st.sidebar.progress(progress_val)
+                st.sidebar.caption(f"**진행률:** {completed_tasks} / {len(error_indices)}")
                 
                 uncompleted_rows = [str(idx+2) for idx, comp in completion_tracker.items() if not comp]
                 if uncompleted_rows:
-                    st.sidebar.caption("⏳ 미완료 행 번호:\n" + ", ".join(uncompleted_rows[:15]) + ("..." if len(uncompleted_rows)>15 else ""))
+                    st.sidebar.caption("미완료 행: " + ", ".join(uncompleted_rows[:8]) + ("..." if len(uncompleted_rows)>8 else ""))
                 
                 if completed_tasks == len(error_indices):
-                    st.sidebar.success("🎉 보정 완료!")
+                    st.sidebar.success("🎉 보정 완료")
                     if st.sidebar.button("✅ 2단계: 거리 산출 시작", type="primary", use_container_width=True):
                         st.session_state.mapping_df = df_edit 
                         st.session_state.step = 2
                         st.rerun()
                 else:
-                    st.sidebar.button("✅ 2단계: 거리 산출 (대기중)", disabled=True, use_container_width=True)
+                    st.sidebar.button("✅ 산출 대기중", disabled=True, use_container_width=True)
 
     # [Step 2] 최종 거리 산출
     if st.session_state.step == 2:
         st.markdown("---")
         st.subheader("📊 2단계 완료: 차량 톤급 기반 주행 거리 산출 결과")
         
-        st.sidebar.markdown("---")
-        st.sidebar.success("✅ 모든 작업이 완료되었습니다.")
-        if st.sidebar.button("🔄 처음부터 다시 시작", use_container_width=True):
+        # 버튼을 상단에 콤팩트하게 배치
+        if st.sidebar.button("🔄 새로 시작", use_container_width=True):
             reset_step()
             st.rerun()
             
@@ -359,16 +359,17 @@ if df_raw is not None:
                     st.session_state.api_log.extend(logs)
                 addr_dict[row['원본 주소']] = (final_addr, x, y)
             
-            df_target = st.session_state.df_raw
-            total_rows = len(df_target)
+            df_target = st.session_state.df_raw.copy()
+            out_cols = ["적용 차종", "정정_출발지", "정정_도착지", "주행거리(km)", "산출 비고", "카카오맵 자동길찾기"]
+            df_target_clean = df_target.drop(columns=[c for c in out_cols if c in df_target.columns]).reset_index(drop=True)
+            total_rows = len(df_target_clean)
             
             routes_to_fetch = set()
-            for i, row in df_target.iterrows():
+            for i, row in df_target_clean.iterrows():
                 s_raw, e_raw = str(row[col_start]), str(row[col_end])
                 ton_val = row[col_ton]
-                
-                try: car_type = TONNAGE_MAP.get(float(ton_val), 1)
-                except: car_type = 1
+                parsed_ton = parse_tonnage(ton_val)
+                car_type = TONNAGE_MAP.get(parsed_ton, 1) if parsed_ton is not None else 1
                 
                 s_info = addr_dict.get(s_raw, ("확인 불가", None, None))
                 e_info = addr_dict.get(e_raw, ("확인 불가", None, None))
@@ -394,10 +395,11 @@ if df_raw is not None:
             results = []
             links = []
             
-            for i, row in df_target.iterrows():
+            for i, row in df_target_clean.iterrows():
                 s_raw, e_raw = str(row[col_start]), str(row[col_end])
-                try: car_type = TONNAGE_MAP.get(float(row[col_ton]), 1)
-                except: car_type = 1
+                ton_val = row[col_ton]
+                parsed_ton = parse_tonnage(ton_val)
+                car_type = TONNAGE_MAP.get(parsed_ton, 1) if parsed_ton is not None else 1
                     
                 s_info = addr_dict.get(s_raw, ("확인 불가", None, None))
                 e_info = addr_dict.get(e_raw, ("확인 불가", None, None))
@@ -422,9 +424,13 @@ if df_raw is not None:
                 s_final = s_info[0] if s_info[0] else "확인 불가"
                 e_final = e_info[0] if e_info[0] else "확인 불가"
                 
+                # [확인사항] 적용 차종 열 명시 (웹 UI와 엑셀 모두 동일 반영)
                 results.append({
-                    "정정_출발지": s_final, "정정_도착지": e_final, 
-                    "주행거리(km)": dist, "산출 비고": note
+                    "적용 차종": f"{car_type}종",
+                    "정정_출발지": s_final, 
+                    "정정_도착지": e_final, 
+                    "주행거리(km)": dist, 
+                    "산출 비고": note
                 })
                 
                 if s_info[1] and e_info[1] and "보정 제외" not in [s_info[0], e_info[0]]:
@@ -435,7 +441,7 @@ if df_raw is not None:
                     
                 prog.progress((i + 1) / total_rows)
             
-            df_res = pd.concat([df_target.reset_index(drop=True), pd.DataFrame(results)], axis=1)
+            df_res = pd.concat([df_target_clean, pd.DataFrame(results)], axis=1)
             df_res['카카오맵 자동길찾기'] = links
             st.session_state.final_df = df_res
             
@@ -443,7 +449,7 @@ if df_raw is not None:
 
         final_df = st.session_state.final_df
         total_cnt = len(final_df)
-        success_cnt = len(final_df[final_df['산출 비고'].str.contains('✅ 정상 산출')])
+        success_cnt = len(final_df[final_df['산출 비고'].str.contains('✅ 정상 산출', na=False)])
         fail_cnt = total_cnt - success_cnt
         
         msg_col, pie_col = st.columns([4, 1.2])
@@ -457,15 +463,18 @@ if df_raw is not None:
             st.plotly_chart(fig2, use_container_width=True)
 
         def highlight_result(row):
-            if '사용자 제외' in row['산출 비고']: return ['background-color: #f2f2f2; color: #a6a6a6'] * len(row)
-            elif '⚠️' in row['산출 비고']: return ['background-color: #ffe6e6; color: #cc0000'] * len(row)
+            note = str(row.get('산출 비고', ''))
+            if '사용자 제외' in note: return ['background-color: #f2f2f2; color: #a6a6a6'] * len(row)
+            elif '⚠️' in note: return ['background-color: #ffe6e6; color: #cc0000'] * len(row)
             return [''] * len(row)
             
+        # 웹 UI 결과표에서 '적용 차종' 열이 렌더링됩니다.
         st.dataframe(
             final_df.style.apply(highlight_result, axis=1), 
             column_config={
                 col_start: st.column_config.TextColumn(width=120),
                 col_end: st.column_config.TextColumn(width=120),
+                "적용 차종": st.column_config.TextColumn(width=80), 
                 "정정_출발지": st.column_config.TextColumn(width=120),
                 "정정_도착지": st.column_config.TextColumn(width=120),
                 "카카오맵 자동길찾기": st.column_config.LinkColumn("카카오맵 자동길찾기", display_text="🚀 즉시 경로 확인")
