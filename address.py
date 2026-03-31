@@ -133,7 +133,6 @@ def reset_step():
     st.session_state.step = 0
     st.session_state.api_log = [] 
 
-# [수정] 여백 축소를 위해 header 대신 markdown과 간소화된 텍스트 사용
 st.sidebar.markdown("**1. 기본 설정**")
 api_key = st.sidebar.text_input("카카오 REST API 키", type="password", on_change=reset_step)
 uploaded_file = st.sidebar.file_uploader("구간 엑셀 파일 업로드", type=["xlsx"], on_change=reset_step)
@@ -152,11 +151,11 @@ if uploaded_file and api_key:
     cols = df_raw.columns.tolist()
     
     st.sidebar.markdown("<br>**2. 열(Column) 매핑**", unsafe_allow_html=True)
-    # [수정] 수직 공간 절약을 위해 열 선택 위젯을 가로로 압축 배치
+    # [수정] 톤급은 한 줄, 출발지/도착지는 그 다음 한 줄로 배치
+    col_ton = st.sidebar.selectbox("톤급", cols, on_change=reset_step)
     c1, c2 = st.sidebar.columns(2)
-    col_ton = c1.selectbox("톤급", cols, on_change=reset_step)
-    col_start = c2.selectbox("출발지", cols, on_change=reset_step)
-    col_end = st.sidebar.selectbox("도착지", cols, on_change=reset_step)
+    col_start = c1.selectbox("출발지", cols, on_change=reset_step)
+    col_end = c2.selectbox("도착지", cols, on_change=reset_step)
     
     st.sidebar.markdown("<br>**3. 실행 및 진행 상황**", unsafe_allow_html=True)
 
@@ -307,7 +306,6 @@ if df_raw is not None:
                 title_ph.markdown(f"**행 {idx+2}** {mark} ➡️ 상태: :{color}[**{status}**]")
                 st.markdown("---")
         
-        # [수정] 사이드바 2단계 실행 영역 간소화
         if st.session_state.step == 1:
             if len(error_indices) == 0:
                 st.sidebar.success("🎉 모든 주소 정상")
@@ -338,7 +336,6 @@ if df_raw is not None:
         st.markdown("---")
         st.subheader("📊 2단계 완료: 차량 톤급 기반 주행 거리 산출 결과")
         
-        # 버튼을 상단에 콤팩트하게 배치
         if st.sidebar.button("🔄 새로 시작", use_container_width=True):
             reset_step()
             st.rerun()
@@ -424,7 +421,6 @@ if df_raw is not None:
                 s_final = s_info[0] if s_info[0] else "확인 불가"
                 e_final = e_info[0] if e_info[0] else "확인 불가"
                 
-                # [확인사항] 적용 차종 열 명시 (웹 UI와 엑셀 모두 동일 반영)
                 results.append({
                     "적용 차종": f"{car_type}종",
                     "정정_출발지": s_final, 
@@ -468,7 +464,6 @@ if df_raw is not None:
             elif '⚠️' in note: return ['background-color: #ffe6e6; color: #cc0000'] * len(row)
             return [''] * len(row)
             
-        # 웹 UI 결과표에서 '적용 차종' 열이 렌더링됩니다.
         st.dataframe(
             final_df.style.apply(highlight_result, axis=1), 
             column_config={
