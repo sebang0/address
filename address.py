@@ -27,7 +27,7 @@ def parse_tonnage(val):
     try: return float(cleaned)
     except ValueError: return None
 
-# --- 1. 카카오 API 통신 함수 ---
+# --- 1. 카카오 API 통신 함수 (시뮬레이션 로직 추가) ---
 def get_address_info(address, api_key, session):
     logs = []
     def add_log(phase, api_type, query, status_result):
@@ -35,10 +35,22 @@ def get_address_info(address, api_key, session):
 
     if pd.isna(address) or str(address).strip() == "":
         return "입력값 없음", "", None, None, [], logs
+        
+    addr_str = str(address).strip()
+
+    # [신규] 시뮬레이션 모드일 때의 가상 응답
+    if api_key == "SIMULATION_MODE":
+        if "포승읍" in addr_str:
+            add_log("1단계", "주소 검색(가상)", addr_str, "모호함(다중검색)")
+            return "모호함(다중검색)", "경기 평택시 포승읍", "126.8", "36.9", ["경기 평택시 포승읍 도곡리", "경기 평택시 포승읍 내기리", "경기 평택시 포승읍 원정리"], logs
+        elif "오류주소" in addr_str:
+            add_log("1단계", "주소 검색(가상)", addr_str, "실패(검색 불가)")
+            return "검색 불가", "", None, None, [], logs
+        else:
+            add_log("1단계", "주소 검색(가상)", addr_str, "성공(1건)")
+            return "정상", addr_str, "127.0", "37.0", [], logs
 
     headers = {"Authorization": f"KakaoAK {api_key}"}
-    addr_str = str(address).strip()
-    
     url = "https://dapi.kakao.com/v2/local/search/address.json"
     res = session.get(url, headers=headers, params={"query": addr_str}) 
     
@@ -80,8 +92,13 @@ def get_coords_only(address, api_key, session):
         logs.append({"단계": "2단계", "호출 시간": datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3], "API 종류": api_type, "요청 파라미터": str(query), "응답 결과": status_result})
 
     if not address or address in ["확인 불가", "보정 제외"]: return None, None, logs
-    headers = {"Authorization": f"KakaoAK {api_key}"}
     
+    # [신규] 시뮬레이션 모드일 때의 가상 응답
+    if api_key == "SIMULATION_MODE":
+        add_log("재조회(가상)", address, "성공")
+        return "127.1", "37.1", logs
+        
+    headers = {"Authorization": f"KakaoAK {api_key}"}
     res = session.get("https://dapi.kakao.com/v2/local/search/address.json", headers=headers, params={"query": address})
     if res.status_code == 200 and res.json().get('documents'):
         add_log("재조회(주소)", address, "성공")
@@ -100,6 +117,12 @@ def get_driving_distance(start_coord, end_coord, api_key, session, car_type):
     query_str = f"출발({start_coord[0]},{start_coord[1]}) -> 도착({end_coord[0]},{end_coord[1]}), {car_type}종"
     def add_log(api_type, status_result):
         logs.append({"단계": "2단계", "호출 시간": datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3], "API 종류": api_type, "요청 파라미터": query_str, "응답 결과": status_result})
+
+    # [신규] 시뮬레이션 모드일 때의 가상 거리 산출
+    if api_key == "SIMULATION_MODE":
+        dummy_dist = round(50.5 + (int(car_type) * 3.2), 2)
+        add_log("길찾기(가상)", f"성공({dummy_dist}km)")
+        return dummy_dist, logs
 
     url = "https://apis-navi.kakaomobility.com/v1/directions"
     headers = {"Authorization": f"KakaoAK {api_key}", "Content-Type": "application/json"}
@@ -133,28 +156,53 @@ def reset_step():
     st.session_state.step = 0
     st.session_state.api_log = [] 
 
+# [신규] 시뮬레이션 모드 토글
+st.sidebar.markdown("**0. 테스트 모드**")
+is_simulation = st.sidebar.toggle("🧪 샘플 데이터로 기능 체험하기", on_change=reset_step)
+st.sidebar.markdown("---")
+
 st.sidebar.markdown("**1. 기본 설정**")
-api_key = st.sidebar.text_input("카카오 REST API 키", type="password", on_change=reset_step)
-uploaded_file = st.sidebar.file_uploader("구간 엑셀 파일 업로드", type=["xlsx"], on_change=reset_step)
+if is_simulation:
+    st.sidebar.info("💡 체험 모드가 켜져 있습니다. API 키와 파일 업로드가 필요하지 않습니다.")
+    api_key = "SIMULATION_MODE"
+    uploaded_file = "SIMULATION_FILE"
+    
+    # 가상의 샘플 데이터프레임 생성
+    df_raw = pd.DataFrame({
+        "ID": ["S01", "S02", "S03"],
+        "톤급": [25, "11톤", 2.5],
+        "출발지": ["경기 평택시 포승읍", "서울 강남구 테헤란로 123", "오류주소 얍얍얍"],
+        "도착지": ["서울 강남구 선릉로 433", "부산 해운대구 달맞이길 117", "인천 동구 항동 7가 11"]
+    })
+    cols = df_raw.columns.tolist()
+else:
+    api_key = st.sidebar.text_input("카카오 REST API 키", type="password", on_change=reset_step)
+    uploaded_file = st.sidebar.file_uploader("구간 엑셀 파일 업로드", type=["xlsx"], on_change=reset_step)
+    df_raw = None
+    if uploaded_file and api_key:
+        df_raw = pd.read_excel(uploaded_file)
+        cols = df_raw.columns.tolist()
 
 with st.sidebar.expander("📊 톤급-차종 마스터표 보기", expanded=False):
     st.dataframe(DF_MASTER, hide_index=True, use_container_width=True)
 
 MAX_WORKERS = 5 
-df_raw = None
 col_start = None
 col_end = None
 col_ton = None
 
-if uploaded_file and api_key:
-    df_raw = pd.read_excel(uploaded_file)
-    cols = df_raw.columns.tolist()
-    
+if df_raw is not None:
     st.sidebar.markdown("<br>**2. 열(Column) 매핑**", unsafe_allow_html=True)
-    col_ton = st.sidebar.selectbox("톤급", cols, on_change=reset_step)
+    
+    # 시뮬레이션 모드일 때는 기본값을 자동으로 잡아주기 위함
+    default_ton_idx = cols.index("톤급") if "톤급" in cols else 0
+    default_start_idx = cols.index("출발지") if "출발지" in cols else 0
+    default_end_idx = cols.index("도착지") if "도착지" in cols else 0
+
+    col_ton = st.sidebar.selectbox("톤급", cols, index=default_ton_idx, on_change=reset_step)
     c1, c2 = st.sidebar.columns(2)
-    col_start = c1.selectbox("출발지", cols, on_change=reset_step)
-    col_end = c2.selectbox("도착지", cols, on_change=reset_step)
+    col_start = c1.selectbox("출발지", cols, index=default_start_idx, on_change=reset_step)
+    col_end = c2.selectbox("도착지", cols, index=default_end_idx, on_change=reset_step)
     
     st.sidebar.markdown("<br>**3. 작업 방식 선택**", unsafe_allow_html=True)
 
@@ -230,7 +278,6 @@ if df_raw is not None:
             st.rerun()
 
     # --- 1단계 결과 화면 (2단계 진입 후에도 상단 유지) ---
-    # 주소 정정 단계를 거쳤을 때만(상태가 '검증 생략'이 아닐 때만) 표시
     if st.session_state.step >= 1 and st.session_state.status_map.get(next(iter(st.session_state.status_map)), "") != "검증 생략":
         st.subheader("📋 1단계 완료: 전체 구간 주소 검증 결과")
         total_unique = len(st.session_state.mapping_df)
@@ -270,7 +317,6 @@ if df_raw is not None:
             fig1.update_layout(margin=dict(t=10, b=0, l=0, r=0), height=200, showlegend=False)
             st.plotly_chart(fig1, use_container_width=True)
             
-        # 보정 UI 파트: 1단계일 때만 보이고, 2단계로 넘어가면 가독성을 위해 요약만 유지
         if st.session_state.step == 1:
             st.markdown("---")
             st.subheader("🛠️ 수정이 필요한 주소 보정")
@@ -310,7 +356,6 @@ if df_raw is not None:
                     title_ph.markdown(f"**행 {idx+2}** {'✅' if is_completed else '⏳'} ➡️ 상태: :{color}[**{status}**]")
                     st.markdown("---")
 
-            # 사이드바 진행률 및 2단계 시작 버튼
             st.sidebar.markdown("---")
             st.sidebar.subheader("📍 2단계 진행")
             if len(error_indices) == 0 or completed_tasks == len(error_indices):
@@ -326,7 +371,7 @@ if df_raw is not None:
                 if uncompleted_rows: st.sidebar.caption("미완료 행: " + ", ".join(uncompleted_rows[:8]))
                 st.sidebar.button("✅ 산출 대기중", disabled=True, use_container_width=True)
 
-    # --- 2단계 거리 산출 화면 (1단계 아래에 위치) ---
+    # --- 2단계 거리 산출 화면 ---
     if st.session_state.step == 2:
         st.markdown("---")
         st.subheader("📊 2단계 완료: 차량 톤급 기반 주행 거리 산출 결과")
@@ -343,7 +388,6 @@ if df_raw is not None:
             coords_total = len(st.session_state.mapping_df)
             coords_done = 0
             
-            # 1) 좌표 확인/변환
             for _, row in st.session_state.mapping_df.iterrows():
                 if row.get('제외여부', False):
                     addr_dict[row['원본 주소']] = ("보정 제외", None, None)
@@ -379,18 +423,12 @@ if df_raw is not None:
                     if start_coord != end_coord: routes_to_fetch.add((start_coord, end_coord, car_type))
 
             route_cache = {}
-            # 2) 경로 산출 (멀티 스레드)
             if routes_to_fetch:
                 routes_total = len(routes_to_fetch)
                 routes_done = 0
                 for future in as_completed({ThreadPoolExecutor(max_workers=MAX_WORKERS).submit(get_driving_distance, s, e, api_key, http_session, c_type): (s, e, c_type) for s, e, c_type in routes_to_fetch}):
-                    route_tuple = next(iter(future.result()[1])) if False else None # dummy
-                    dist, logs = future.result()
-                    st.session_state.api_log.extend(logs) 
-                    # as_completed 에서는 future를 통해 원래 튜플을 복원해야 함
-                    for r_tuple, f in { (s, e, c): ThreadPoolExecutor().submit(lambda:1) for s,e,c in routes_to_fetch}.items(): pass # logic placeholder
+                    pass # logic placeholder
                 
-                # 가독성을 위해 ThreadPoolExecutor 외부 루프 방식으로 진행률 표시
                 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                     futures = {executor.submit(get_driving_distance, s, e, api_key, http_session, c_type): (s, e, c_type) for s, e, c_type in routes_to_fetch}
                     for future in as_completed(futures):
@@ -402,7 +440,6 @@ if df_raw is not None:
                         prog.progress(routes_done / routes_total)
                         status_text.text(f"2/3. 고유 경로(차종별) 동시 산출 중... ({routes_done}/{routes_total})")
             
-            # 3) 데이터 병합
             results = []; links = []; merge_done = 0
             for i, row in df_target_clean.iterrows():
                 s_raw, e_raw = str(row[col_start]), str(row[col_end])
@@ -435,7 +472,6 @@ if df_raw is not None:
             st.session_state.final_df = df_res
             prog.empty(); status_text.empty()
 
-        # 최종 대시보드 표출
         final_df = st.session_state.final_df
         total_cnt = len(final_df); success_cnt = len(final_df[final_df['산출 비고'].str.contains('✅ 정상 산출', na=False)])
         fail_cnt = total_cnt - success_cnt
