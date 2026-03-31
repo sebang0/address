@@ -10,7 +10,7 @@ import plotly.express as px
 
 log_lock = threading.Lock()
 
-# --- 톤급-차종 마스터 데이터 ---
+# --- 톤급-차종 마스터 데이터 정의 ---
 MASTER_DATA = {
     "톤급": [1, 1.4, 2, 2.5, 3, 3.5, 4, 4.5, 5, 6, 7, 7.5, 8, 9, 9.5, 10, 
            11, 12, 13, 14, 14.5, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27],
@@ -88,46 +88,36 @@ def get_coords_only(address, api_key, session):
     add_log("재조회(전체)", address, "완전 실패")
     return None, None, logs
 
-def get_single_driving_distance(start_coord, end_coord, api_key, session, car_type, fuel):
+def get_driving_distance(start_coord, end_coord, api_key, session, car_type):
+    logs = []
+    query_str = f"출발({start_coord[0]},{start_coord[1]}) -> 도착({end_coord[0]},{end_coord[1]}), {car_type}종"
+    def add_log(api_type, status_result):
+        logs.append({"단계": "2단계", "호출 시간": datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3], "API 종류": api_type, "요청 파라미터": query_str, "응답 결과": status_result})
+
     url = "https://apis-navi.kakaomobility.com/v1/directions"
     headers = {"Authorization": f"KakaoAK {api_key}", "Content-Type": "application/json"}
     params = {
         "origin": f"{start_coord[0]},{start_coord[1]}",
         "destination": f"{end_coord[0]},{end_coord[1]}",
         "priority": "RECOMMEND",
-        "car_type": car_type,
-        "car_fuel": fuel
+        "car_type": car_type
     }
     try:
         res = session.get(url, headers=headers, params=params)
         if res.status_code == 200 and res.json().get('routes'):
-            return round(res.json()['routes'][0]['summary']['distance'] / 1000, 2)
-    except Exception:
-        pass
-    return 0.0
+            dist = round(res.json()['routes'][0]['summary']['distance'] / 1000, 2)
+            add_log("길찾기", f"성공({dist}km)")
+            return dist, logs
+        else:
+            add_log("길찾기", "실패(경로없음)")
+    except Exception as e:
+        add_log("길찾기", f"에러: {e}")
+    return 0.0, logs
 
-def fetch_4_and_5_distances(start_coord, end_coord, api_key, session, fuel):
-    logs = []
-    query_str = f"출발({start_coord[0]},{start_coord[1]}) -> 도착({end_coord[0]},{end_coord[1]})"
-    def add_log(api_type, status_result):
-        logs.append({"단계": "2단계", "호출 시간": datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3], "API 종류": api_type, "요청 파라미터": query_str, "응답 결과": status_result})
-
-    dist_4 = get_single_driving_distance(start_coord, end_coord, api_key, session, 4, fuel)
-    add_log("길찾기(4종)", f"성공({dist_4}km)" if dist_4 > 0 else "실패")
-    
-    dist_5 = get_single_driving_distance(start_coord, end_coord, api_key, session, 5, fuel)
-    add_log("길찾기(5종)", f"성공({dist_5}km)" if dist_5 > 0 else "실패")
-
-    avg_dist = 0.0
-    if dist_4 > 0 and dist_5 > 0: avg_dist = round((dist_4 + dist_5) / 2, 2)
-    elif dist_4 > 0: avg_dist = dist_4
-    elif dist_5 > 0: avg_dist = dist_5
-
-    return dist_4, dist_5, avg_dist, logs
 
 # --- 2. 웹 화면 UI ---
 st.set_page_config(page_title="구간 주소 정정 및 주행 거리 산출", layout="wide")
-st.title("🚚 구간 주소 정정 및 대형화물(4/5종) 주행 거리 산출")
+st.title("🚚 구간 주소 정정 및 톤급별 주행 거리 산출")
 
 if 'step' not in st.session_state: st.session_state.step = 0
 if 'api_log' not in st.session_state: st.session_state.api_log = []
@@ -139,10 +129,6 @@ def reset_step():
 st.sidebar.header("1. 기본 설정")
 api_key = st.sidebar.text_input("카카오 REST API 키", type="password", on_change=reset_step)
 uploaded_file = st.sidebar.file_uploader("구간 엑셀 파일 업로드", type=["xlsx"], on_change=reset_step)
-
-st.sidebar.markdown("---")
-st.sidebar.header("2. 차량 설정")
-selected_fuel = st.sidebar.selectbox("유류 선택:", ["DIESEL", "GASOLINE", "LPG", "ELECTRIC"], index=0, help="대형 화물차의 유류를 선택합니다.", on_change=reset_step)
 
 with st.sidebar.expander("📊 톤급-차종 마스터표 보기", expanded=False):
     st.dataframe(DF_MASTER, hide_index=True, use_container_width=True)
@@ -158,13 +144,14 @@ if uploaded_file and api_key:
     cols = df_raw.columns.tolist()
     
     st.sidebar.markdown("---")
-    st.sidebar.header("3. 열(Column) 매핑")
+    st.sidebar.header("2. 열(Column) 매핑")
+    # [요청사항 반영] 선택 순서 변경: 톤급 -> 출발지 -> 도착지
     col_ton = st.sidebar.selectbox("톤급 열:", cols, on_change=reset_step)
     col_start = st.sidebar.selectbox("출발지 주소 열:", cols, on_change=reset_step)
     col_end = st.sidebar.selectbox("도착지 주소 열:", cols, on_change=reset_step)
     
     st.sidebar.markdown("---")
-    st.sidebar.header("4. 실행 및 진행 상황")
+    st.sidebar.header("3. 실행 및 진행 상황")
 
 if df_raw is not None and st.session_state.step == 0:
     st.info("👈 좌측 사이드바에서 설정을 확인한 후 **[🚀 1단계: 검증 시작]** 버튼을 눌러주세요.")
@@ -172,13 +159,15 @@ if df_raw is not None and st.session_state.step == 0:
     unmapped_tons = set()
     for val in df_raw[col_ton].dropna():
         try:
-            if float(val) not in TONNAGE_MAP: unmapped_tons.add(val)
+            if float(val) not in TONNAGE_MAP:
+                unmapped_tons.add(val)
         except ValueError:
             unmapped_tons.add(val)
             
     if unmapped_tons:
         st.warning(f"⚠️ **업데이트되지 않은 신규 톤급 {len(unmapped_tons)}건의 차종은 1종으로 반영됩니다.** \n(대상: {', '.join(map(str, list(unmapped_tons)[:10]))} 등)")
     else:
+        # [요청사항 반영] 이상이 없는 경우 초록색 배경 알림
         st.success("✅ **모든 톤급 데이터가 마스터표에 정상적으로 매핑되었습니다.**")
 
 if df_raw is not None:
@@ -271,8 +260,8 @@ if df_raw is not None:
         completion_tracker = {}
         
         if len(error_indices) == 0:
-            st.success("🎉 모든 주소가 정상적으로 검색됩니다! 좌측 사이드바에서 2단계를 진행하세요.")
-            completed_tasks = 1; error_indices = []
+            st.success("🎉 모든 주소가 정상적으로 검색됩니다!")
+            # 오류가 0개여도 진행 가능하도록 조건 우회
         else:
             if st.session_state.step == 1: st.info("💡 선택 또는 직접 입력이 모두 완료되어야만 최종 구간 거리를 산출할 수 있습니다.")
             else: st.info("💡 1단계에서 진행한 주소 보정 내역입니다.")
@@ -315,30 +304,40 @@ if df_raw is not None:
                 title_ph.markdown(f"**행 {idx+2}** {mark} ➡️ 상태: :{color}[**{status}**]")
                 st.markdown("---")
         
+        # [요청사항 반영] 2단계 실행 제어 (에러가 없거나 모두 완료 시 버튼 활성화)
         if st.session_state.step == 1:
-            if len(error_indices) > 0:
+            st.sidebar.markdown("---")
+            st.sidebar.subheader("📍 2단계 진행")
+            
+            if len(error_indices) == 0:
+                st.sidebar.success("🎉 모든 주소가 정상입니다!")
+                if st.sidebar.button("✅ 2단계: 거리 산출 시작", type="primary", use_container_width=True):
+                    st.session_state.mapping_df = df_edit 
+                    st.session_state.step = 2
+                    st.rerun()
+            else:
                 st.sidebar.progress(completed_tasks / len(error_indices))
                 st.sidebar.write(f"**진행률:** {completed_tasks} / {len(error_indices)} 완료")
                 
                 uncompleted_rows = [str(idx+2) for idx, comp in completion_tracker.items() if not comp]
                 if uncompleted_rows:
                     st.sidebar.caption("⏳ 미완료 행 번호:\n" + ", ".join(uncompleted_rows[:15]) + ("..." if len(uncompleted_rows)>15 else ""))
-            
-            st.sidebar.markdown("---")
-            if len(error_indices) == 0 or completed_tasks == len(error_indices):
-                st.sidebar.success("🎉 보정 완료!")
-                if st.sidebar.button("✅ 2단계: 거리 산출 시작", type="primary", use_container_width=True):
-                    st.session_state.mapping_df = df_edit 
-                    st.session_state.step = 2
-                    st.rerun()
-            else:
-                st.sidebar.button("✅ 2단계: 거리 산출 (대기중)", disabled=True, use_container_width=True)
+                
+                if completed_tasks == len(error_indices):
+                    st.sidebar.success("🎉 보정 완료!")
+                    if st.sidebar.button("✅ 2단계: 거리 산출 시작", type="primary", use_container_width=True):
+                        st.session_state.mapping_df = df_edit 
+                        st.session_state.step = 2
+                        st.rerun()
+                else:
+                    st.sidebar.button("✅ 2단계: 거리 산출 (대기중)", disabled=True, use_container_width=True)
 
-    # [Step 2] 최종 거리 산출 (4종, 5종, 평균)
+    # [Step 2] 최종 거리 산출
     if st.session_state.step == 2:
         st.markdown("---")
-        st.subheader("📊 2단계 완료: 대형화물(4/5종) 최종 거리 산출 결과")
+        st.subheader("📊 2단계 완료: 차량 톤급 기반 주행 거리 산출 결과")
         
+        st.sidebar.markdown("---")
         st.sidebar.success("✅ 모든 작업이 완료되었습니다.")
         if st.sidebar.button("🔄 처음부터 다시 시작", use_container_width=True):
             reset_step()
@@ -360,16 +359,17 @@ if df_raw is not None:
                     st.session_state.api_log.extend(logs)
                 addr_dict[row['원본 주소']] = (final_addr, x, y)
             
-            df_target = st.session_state.df_raw.copy()
-            # [신규 핵심] 기존에 다운받은 결과 엑셀을 재활용 업로드 했을 때 KeyError가 발생하지 않도록 중복 열 청소!
-            out_cols = ["정정_출발지", "정정_도착지", "4종 거리(km)", "5종 거리(km)", "평균 거리(km)", "주행거리(km)", "산출 비고", "카카오맵 자동길찾기"]
-            df_target_clean = df_target.drop(columns=[c for c in out_cols if c in df_target.columns]).reset_index(drop=True)
-            
-            total_rows = len(df_target_clean)
+            df_target = st.session_state.df_raw
+            total_rows = len(df_target)
             
             routes_to_fetch = set()
-            for i, row in df_target_clean.iterrows():
+            for i, row in df_target.iterrows():
                 s_raw, e_raw = str(row[col_start]), str(row[col_end])
+                ton_val = row[col_ton]
+                
+                try: car_type = TONNAGE_MAP.get(float(ton_val), 1)
+                except: car_type = 1
+                
                 s_info = addr_dict.get(s_raw, ("확인 불가", None, None))
                 e_info = addr_dict.get(e_raw, ("확인 불가", None, None))
                 
@@ -377,29 +377,32 @@ if df_raw is not None:
                     start_coord = (s_info[1], s_info[2])
                     end_coord = (e_info[1], e_info[2])
                     if start_coord != end_coord:
-                        routes_to_fetch.add((start_coord, end_coord))
+                        routes_to_fetch.add((start_coord, end_coord, car_type))
 
             route_cache = {}
             if routes_to_fetch:
-                status_text.text(f"필요한 {len(routes_to_fetch)}개 고유 경로 동시 산출 중 (4/5종)...")
+                status_text.text(f"필요한 {len(routes_to_fetch)}개 고유 경로(차종별) 동시 산출 중...")
                 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                    future_to_route = {executor.submit(fetch_4_and_5_distances, s, e, api_key, http_session, selected_fuel): (s, e) for s, e in routes_to_fetch}
+                    future_to_route = {executor.submit(get_driving_distance, s, e, api_key, http_session, c_type): (s, e, c_type) for s, e, c_type in routes_to_fetch}
                     for future in as_completed(future_to_route):
-                        route = future_to_route[future]
-                        dist_4, dist_5, dist_avg, logs = future.result()
+                        route_tuple = future_to_route[future]
+                        dist, logs = future.result()
                         st.session_state.api_log.extend(logs) 
-                        route_cache[route] = (dist_4, dist_5, dist_avg)
+                        route_cache[route_tuple] = dist
             
             status_text.text("최종 데이터 병합 중...")
             results = []
             links = []
             
-            for i, row in df_target_clean.iterrows():
+            for i, row in df_target.iterrows():
                 s_raw, e_raw = str(row[col_start]), str(row[col_end])
+                try: car_type = TONNAGE_MAP.get(float(row[col_ton]), 1)
+                except: car_type = 1
+                    
                 s_info = addr_dict.get(s_raw, ("확인 불가", None, None))
                 e_info = addr_dict.get(e_raw, ("확인 불가", None, None))
                 
-                d4, d5, d_avg = 0.0, 0.0, 0.0
+                dist = 0.0
                 note = ""
                 
                 if s_info[0] == "보정 제외" or e_info[0] == "보정 제외":
@@ -411,9 +414,8 @@ if df_raw is not None:
                     if start_coord == end_coord:
                         note = "✅ 정상 산출(동일 위치)"
                     else:
-                        cached_vals = route_cache.get((start_coord, end_coord), (0.0, 0.0, 0.0))
-                        d4, d5, d_avg = cached_vals
-                        note = "✅ 정상 산출" if d_avg > 0 else "⚠️ 경로 탐색 불가"
+                        dist = route_cache.get((start_coord, end_coord, car_type), 0.0)
+                        note = "✅ 정상 산출" if dist > 0 else "⚠️ 경로 탐색 불가"
                 else:
                     note = "⚠️ 좌표 확인 불가"
                 
@@ -422,18 +424,18 @@ if df_raw is not None:
                 
                 results.append({
                     "정정_출발지": s_final, "정정_도착지": e_final, 
-                    "4종 거리(km)": d4, "5종 거리(km)": d5, "평균 거리(km)": d_avg, 
-                    "산출 비고": note
+                    "주행거리(km)": dist, "산출 비고": note
                 })
                 
                 if s_info[1] and e_info[1] and "보정 제외" not in [s_info[0], e_info[0]]:
-                    links.append(f"https://m.map.kakao.com/scheme/route?sp={s_info[2]},{s_info[1]}&ep={e_info[2]},{e_info[1]}&by=car")
+                    kakao_cartype = 1 if car_type == 1 else (4 if car_type in [4,5] else 2) 
+                    links.append(f"https://m.map.kakao.com/scheme/route?sp={s_info[2]},{s_info[1]}&ep={e_info[2]},{e_info[1]}&by=car&carType={kakao_cartype}")
                 else:
                     links.append(None)
                     
                 prog.progress((i + 1) / total_rows)
             
-            df_res = pd.concat([df_target_clean, pd.DataFrame(results)], axis=1)
+            df_res = pd.concat([df_target.reset_index(drop=True), pd.DataFrame(results)], axis=1)
             df_res['카카오맵 자동길찾기'] = links
             st.session_state.final_df = df_res
             
@@ -441,7 +443,7 @@ if df_raw is not None:
 
         final_df = st.session_state.final_df
         total_cnt = len(final_df)
-        success_cnt = len(final_df[final_df['산출 비고'].str.contains('✅ 정상 산출', na=False)])
+        success_cnt = len(final_df[final_df['산출 비고'].str.contains('✅ 정상 산출')])
         fail_cnt = total_cnt - success_cnt
         
         msg_col, pie_col = st.columns([4, 1.2])
@@ -454,11 +456,9 @@ if df_raw is not None:
             fig2.update_layout(margin=dict(t=10, b=10, l=0, r=0), height=150, showlegend=False)
             st.plotly_chart(fig2, use_container_width=True)
 
-        # KeyError 방지를 위해 .get()으로 안전하게 접근
         def highlight_result(row):
-            note = str(row.get('산출 비고', ''))
-            if '사용자 제외' in note: return ['background-color: #f2f2f2; color: #a6a6a6'] * len(row)
-            elif '⚠️' in note: return ['background-color: #ffe6e6; color: #cc0000'] * len(row)
+            if '사용자 제외' in row['산출 비고']: return ['background-color: #f2f2f2; color: #a6a6a6'] * len(row)
+            elif '⚠️' in row['산출 비고']: return ['background-color: #ffe6e6; color: #cc0000'] * len(row)
             return [''] * len(row)
             
         st.dataframe(
@@ -476,7 +476,7 @@ if df_raw is not None:
         output = BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             final_df.to_excel(writer, index=False, sheet_name='거리산출결과')
-        st.download_button(label="💾 최종 엑셀 파일 다운로드 (.xlsx)", data=output.getvalue(), file_name="route_distances_4_5.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+        st.download_button(label="💾 최종 엑셀 파일 다운로드 (.xlsx)", data=output.getvalue(), file_name="route_distances_final.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
         
     # --- 시스템 디버그 (로그 합계 표출) ---
     if st.session_state.api_log:
