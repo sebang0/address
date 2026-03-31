@@ -151,16 +151,15 @@ if uploaded_file and api_key:
     cols = df_raw.columns.tolist()
     
     st.sidebar.markdown("<br>**2. 열(Column) 매핑**", unsafe_allow_html=True)
-    # [수정] 톤급은 한 줄, 출발지/도착지는 그 다음 한 줄로 배치
     col_ton = st.sidebar.selectbox("톤급", cols, on_change=reset_step)
     c1, c2 = st.sidebar.columns(2)
     col_start = c1.selectbox("출발지", cols, on_change=reset_step)
     col_end = c2.selectbox("도착지", cols, on_change=reset_step)
     
-    st.sidebar.markdown("<br>**3. 실행 및 진행 상황**", unsafe_allow_html=True)
+    st.sidebar.markdown("<br>**3. 작업 방식 선택**", unsafe_allow_html=True)
 
 if df_raw is not None and st.session_state.step == 0:
-    st.info("👈 좌측 사이드바에서 설정을 확인한 후 **[🚀 1단계: 검증 시작]** 버튼을 눌러주세요.")
+    st.info("👈 좌측 사이드바에서 설정을 확인한 후 작업 방식을 선택해주세요.")
     
     unmapped_tons = set()
     for val in df_raw[col_ton].dropna():
@@ -174,9 +173,9 @@ if df_raw is not None and st.session_state.step == 0:
         st.success("✅ **모든 톤급 데이터가 마스터표에 정상적으로 매핑되었습니다.**")
 
 if df_raw is not None:
-    # [Step 1] 주소 정정 실행
+    # [Step 1] 주소 정정 실행 또는 생략
     if st.session_state.step == 0:
-        if st.sidebar.button("🚀 1단계: 검증 시작", type="primary", use_container_width=True):
+        if st.sidebar.button("1️⃣ 주소 정정 후 거리 산출", type="primary", use_container_width=True):
             st.session_state.api_log = [] 
             unique_addrs = pd.unique(df_raw[[col_start, col_end]].astype(str).values.ravel('K'))
             unique_addrs = [addr for addr in unique_addrs if addr.strip() and addr.lower() != 'nan']
@@ -214,9 +213,34 @@ if df_raw is not None:
             st.session_state.step = 1
             prog.empty(); status_text.empty()
             st.rerun()
+            
+        if st.sidebar.button("2️⃣ 주소 정정 없이 바로 거리 산출", type="secondary", use_container_width=True):
+            st.session_state.api_log = []
+            unique_addrs = pd.unique(df_raw[[col_start, col_end]].astype(str).values.ravel('K'))
+            unique_addrs = [addr for addr in unique_addrs if addr.strip() and addr.lower() != 'nan']
+            
+            mock_mapping = []
+            for addr in unique_addrs:
+                mock_mapping.append({
+                    "원본 주소": addr,
+                    "정정된 주소": addr,
+                    "상태": "검증 생략",
+                    "제외여부": False,
+                    "X": None,
+                    "Y": None
+                })
+            
+            mapping_df = pd.DataFrame(mock_mapping)
+            mapping_df['원본 주소'] = pd.Categorical(mapping_df['원본 주소'], categories=unique_addrs, ordered=True)
+            st.session_state.mapping_df = mapping_df.sort_values('원본 주소').reset_index(drop=True)
+            st.session_state.candidates = {}
+            st.session_state.status_map = {addr: "검증 생략" for addr in unique_addrs}
+            st.session_state.df_raw = df_raw
+            st.session_state.step = 2 
+            st.rerun()
 
     # [Step 1.5] 정정 결과 요약표 & 수동 보정 UI
-    if st.session_state.step >= 1:
+    if st.session_state.step == 1:
         st.subheader("📋 1단계 완료: 전체 구간 주소 검증 결과")
         total_unique = len(st.session_state.mapping_df)
         normal_cnt = len(st.session_state.mapping_df[st.session_state.mapping_df['상태'] == '정상'])
@@ -265,8 +289,7 @@ if df_raw is not None:
         if len(error_indices) == 0:
             st.success("🎉 모든 주소가 정상적으로 검색됩니다!")
         else:
-            if st.session_state.step == 1: st.info("💡 선택 또는 직접 입력이 모두 완료되어야만 최종 구간 거리를 산출할 수 있습니다.")
-            else: st.info("💡 1단계에서 진행한 주소 보정 내역입니다.")
+            st.info("💡 선택 또는 직접 입력이 모두 완료되어야만 최종 구간 거리를 산출할 수 있습니다.")
 
             for idx in error_indices:
                 title_ph = st.empty()
@@ -306,30 +329,31 @@ if df_raw is not None:
                 title_ph.markdown(f"**행 {idx+2}** {mark} ➡️ 상태: :{color}[**{status}**]")
                 st.markdown("---")
         
-        if st.session_state.step == 1:
-            if len(error_indices) == 0:
-                st.sidebar.success("🎉 모든 주소 정상")
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("📍 2단계 진행")
+        if len(error_indices) == 0:
+            st.sidebar.success("🎉 모든 주소 정상")
+            if st.sidebar.button("✅ 2단계: 거리 산출 시작", type="primary", use_container_width=True):
+                st.session_state.mapping_df = df_edit 
+                st.session_state.step = 2
+                st.rerun()
+        else:
+            progress_val = completed_tasks / len(error_indices)
+            st.sidebar.progress(progress_val)
+            st.sidebar.caption(f"**진행률:** {completed_tasks} / {len(error_indices)}")
+            
+            uncompleted_rows = [str(idx+2) for idx, comp in completion_tracker.items() if not comp]
+            if uncompleted_rows:
+                st.sidebar.caption("미완료 행: " + ", ".join(uncompleted_rows[:8]) + ("..." if len(uncompleted_rows)>8 else ""))
+            
+            if completed_tasks == len(error_indices):
+                st.sidebar.success("🎉 보정 완료")
                 if st.sidebar.button("✅ 2단계: 거리 산출 시작", type="primary", use_container_width=True):
                     st.session_state.mapping_df = df_edit 
                     st.session_state.step = 2
                     st.rerun()
             else:
-                progress_val = completed_tasks / len(error_indices)
-                st.sidebar.progress(progress_val)
-                st.sidebar.caption(f"**진행률:** {completed_tasks} / {len(error_indices)}")
-                
-                uncompleted_rows = [str(idx+2) for idx, comp in completion_tracker.items() if not comp]
-                if uncompleted_rows:
-                    st.sidebar.caption("미완료 행: " + ", ".join(uncompleted_rows[:8]) + ("..." if len(uncompleted_rows)>8 else ""))
-                
-                if completed_tasks == len(error_indices):
-                    st.sidebar.success("🎉 보정 완료")
-                    if st.sidebar.button("✅ 2단계: 거리 산출 시작", type="primary", use_container_width=True):
-                        st.session_state.mapping_df = df_edit 
-                        st.session_state.step = 2
-                        st.rerun()
-                else:
-                    st.sidebar.button("✅ 산출 대기중", disabled=True, use_container_width=True)
+                st.sidebar.button("✅ 산출 대기중", disabled=True, use_container_width=True)
 
     # [Step 2] 최종 거리 산출
     if st.session_state.step == 2:
@@ -345,16 +369,27 @@ if df_raw is not None:
             http_session = requests.Session()
             
             addr_dict = {}
+            coords_total = len(st.session_state.mapping_df)
+            coords_done = 0
+            
+            # 1) 좌표 확인/변환 루프
             for _, row in st.session_state.mapping_df.iterrows():
                 if row.get('제외여부', False):
                     addr_dict[row['원본 주소']] = ("보정 제외", None, None)
+                    coords_done += 1
                     continue
+                    
                 final_addr = row['정정된 주소']
                 x, y = row['X'], row['Y']
                 if final_addr and final_addr != "확인 불가" and pd.isna(x):
                     x, y, logs = get_coords_only(final_addr, api_key, http_session)
                     st.session_state.api_log.extend(logs)
                 addr_dict[row['원본 주소']] = (final_addr, x, y)
+                
+                coords_done += 1
+                if coords_total > 0:
+                    prog.progress(coords_done / coords_total)
+                    status_text.text(f"1/3. 좌표 확인 및 변환 중... ({coords_done}/{coords_total})")
             
             df_target = st.session_state.df_raw.copy()
             out_cols = ["적용 차종", "정정_출발지", "정정_도착지", "주행거리(km)", "산출 비고", "카카오맵 자동길찾기"]
@@ -378,8 +413,11 @@ if df_raw is not None:
                         routes_to_fetch.add((start_coord, end_coord, car_type))
 
             route_cache = {}
+            # 2) 경로 산출 루프 (멀티 스레드)
             if routes_to_fetch:
-                status_text.text(f"필요한 {len(routes_to_fetch)}개 고유 경로(차종별) 동시 산출 중...")
+                routes_total = len(routes_to_fetch)
+                routes_done = 0
+                status_text.text(f"2/3. 고유 경로(차종별) 동시 산출 중... (0/{routes_total})")
                 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                     future_to_route = {executor.submit(get_driving_distance, s, e, api_key, http_session, c_type): (s, e, c_type) for s, e, c_type in routes_to_fetch}
                     for future in as_completed(future_to_route):
@@ -387,10 +425,16 @@ if df_raw is not None:
                         dist, logs = future.result()
                         st.session_state.api_log.extend(logs) 
                         route_cache[route_tuple] = dist
+                        
+                        routes_done += 1
+                        prog.progress(routes_done / routes_total)
+                        status_text.text(f"2/3. 고유 경로(차종별) 동시 산출 중... ({routes_done}/{routes_total})")
             
-            status_text.text("최종 데이터 병합 중...")
+            # 3) 데이터 병합 루프
+            status_text.text(f"3/3. 최종 데이터 병합 중... (0/{total_rows})")
             results = []
             links = []
+            merge_done = 0
             
             for i, row in df_target_clean.iterrows():
                 s_raw, e_raw = str(row[col_start]), str(row[col_end])
@@ -435,7 +479,9 @@ if df_raw is not None:
                 else:
                     links.append(None)
                     
-                prog.progress((i + 1) / total_rows)
+                merge_done += 1
+                prog.progress(merge_done / total_rows)
+                status_text.text(f"3/3. 최종 데이터 병합 중... ({merge_done}/{total_rows})")
             
             df_res = pd.concat([df_target_clean, pd.DataFrame(results)], axis=1)
             df_res['카카오맵 자동길찾기'] = links
